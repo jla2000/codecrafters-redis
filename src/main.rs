@@ -15,7 +15,7 @@ fn main() {
             Ok(mut stream) => {
                 let mut buf = Vec::new();
                 while stream.read(&mut buf).unwrap() > 0 {
-                    stream.write_all(b"+PONG\r\n").unwrap();
+                    stream.write_all(b"PONG\r\n").unwrap();
                 }
             }
             Err(e) => {
