@@ -64,11 +64,10 @@ fn handle_client(mut stream: TcpStream, db: &Mutex<Database>) {
             "ECHO" => build_bulk_string(data_parts.next().unwrap()),
             "RPUSH" => {
                 let key = data_parts.next().unwrap();
-                let value = data_parts.next().unwrap();
 
                 let mut db = db.lock().unwrap();
                 let list = db.lists.entry(key.into()).or_default();
-                list.push(value.into());
+                list.extend(data_parts.map(String::from));
 
                 build_integer(list.len())
             }
