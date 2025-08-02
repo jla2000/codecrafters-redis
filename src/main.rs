@@ -2,6 +2,7 @@
 use core::num;
 use std::{
     collections::VecDeque,
+    fmt::format,
     io::{Read, Write},
     net::{TcpListener, TcpStream},
     str::FromStr,
@@ -47,13 +48,23 @@ fn handle_client(mut stream: TcpStream) {
         dbg!(&data);
 
         match data.as_slice() {
-            ["PING"] => stream.write_all(b"PONG").unwrap(),
+            ["PING"] => stream
+                .write_all(build_simple_string("PONG").as_bytes())
+                .unwrap(),
             ["ECHO", message] => stream
                 .write_all(build_binary_string(message).as_bytes())
                 .unwrap(),
             _ => {}
         }
     }
+}
+
+fn build_binary_string(data: &str) -> String {
+    format!("${}\r\n{}\r\n", data.len(), data)
+}
+
+fn build_simple_string(data: &str) -> String {
+    format!("+{data}\r\n")
 }
 
 fn parse_array(input: &[u8]) -> IResult<&[u8], Vec<&str>> {
@@ -74,10 +85,6 @@ fn parse_binary_string(input: &[u8]) -> IResult<&[u8], &str> {
     let (input, data) =
         map_res(terminated(take(len), tag("\r\n")), std::str::from_utf8).parse(input)?;
     Ok((input, data))
-}
-
-fn build_binary_string(data: &str) -> String {
-    format!("${}\r\n{}\r\n", data.len(), data)
 }
 
 fn parse_number(input: &[u8]) -> IResult<&[u8], usize> {
