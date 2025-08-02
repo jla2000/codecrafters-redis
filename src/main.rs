@@ -56,7 +56,7 @@ fn handle_client(mut stream: TcpStream, db: &Mutex<HashMap<String, String>>) {
             ["ECHO", message] => build_bulk_string(message),
             ["GET", key] => {
                 if let Some(value) = db.lock().unwrap().get(*key) {
-                    value.clone()
+                    build_bulk_string(value)
                 } else {
                     "$-1\r\n".into()
                 }
