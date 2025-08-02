@@ -15,8 +15,8 @@ fn main() {
             Ok(mut stream) => {
                 println!("Client connected");
 
-                let mut buf = Vec::new();
-                while stream.read(&mut buf).unwrap() > 0 {
+                let mut input = String::new();
+                while stream.read_to_string(&mut input).unwrap() > 0 {
                     stream.write_all(b"+PONG\r\n").unwrap();
                 }
             }
