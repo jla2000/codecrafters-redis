@@ -15,9 +15,14 @@ fn main() {
             Ok(mut stream) => {
                 println!("Client connected");
 
-                let mut input = String::new();
-                while stream.read_to_string(&mut input).unwrap() > 0 {
-                    stream.write_all(b"+PONG\r\n").unwrap();
+                let mut buf = [0; 512];
+                loop {
+                    let read_count = stream.read(&mut buf).unwrap();
+                    if read_count == 0 {
+                        break;
+                    }
+
+                    stream.write(b"+PONG\r\n").unwrap();
                 }
             }
             Err(e) => {
