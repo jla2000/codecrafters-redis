@@ -1,11 +1,12 @@
 #![allow(unused_imports)]
 use core::num;
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     fmt::format,
     io::{Read, Write},
     net::{TcpListener, TcpStream},
     str::FromStr,
+    sync::{Arc, Mutex},
 };
 
 use nom::{
@@ -26,40 +27,55 @@ fn main() {
     println!("Logs from your program will appear here!");
 
     let listener = TcpListener::bind("127.0.0.1:6379").unwrap();
+    let db = Mutex::new(HashMap::new());
 
-    for stream in listener.incoming() {
-        match stream {
-            Ok(stream) => {
-                println!("Client connected");
-                std::thread::spawn(|| handle_client(stream));
-            }
-            Err(e) => {
-                println!("error: {}", e);
+    std::thread::scope(|s| {
+        for stream in listener.incoming() {
+            match stream {
+                Ok(stream) => {
+                    println!("Client connected");
+                    s.spawn(|| handle_client(stream, &db));
+                }
+                Err(e) => {
+                    println!("error: {}", e);
+                }
             }
         }
-    }
+    })
 }
 
-fn handle_client(mut stream: TcpStream) {
+fn handle_client(mut stream: TcpStream, db: &Mutex<HashMap<String, String>>) {
     let mut buf = [0; 512];
 
     while stream.read(&mut buf).unwrap() > 0 {
         let data = parse_array(&mut buf).unwrap().1;
         dbg!(&data);
 
-        match data.as_slice() {
-            ["PING"] => stream
-                .write_all(build_simple_string("PONG").as_bytes())
-                .unwrap(),
-            ["ECHO", message] => stream
-                .write_all(build_binary_string(message).as_bytes())
-                .unwrap(),
-            _ => {}
-        }
+        let response = match data.as_slice() {
+            ["PING"] => build_simple_string("PONG"),
+            ["ECHO", message] => build_bulk_string(message),
+            ["GET", key] => {
+                if let Some(value) = db.lock().unwrap().get(*key) {
+                    value.clone()
+                } else {
+                    "$-1\r\n".into()
+                }
+            }
+            ["SET", key, value] => {
+                db.lock()
+                    .unwrap()
+                    .insert(key.to_string(), value.to_string())
+                    .unwrap();
+                build_simple_string("OK")
+            }
+            _ => unimplemented!(),
+        };
+
+        stream.write_all(response.as_bytes()).unwrap();
     }
 }
 
-fn build_binary_string(data: &str) -> String {
+fn build_bulk_string(data: &str) -> String {
     format!("${}\r\n{}\r\n", data.len(), data)
 }
 
@@ -69,7 +85,7 @@ fn build_simple_string(data: &str) -> String {
 
 fn parse_array(input: &[u8]) -> IResult<&[u8], Vec<&str>> {
     let (input, num_elements) = delimited(char('*'), parse_number, tag("\r\n")).parse(input)?;
-    many(0..=num_elements, parse_binary_string).parse(input)
+    many(0..=num_elements, parse_bulk_string).parse(input)
 }
 
 fn parse_simple_string(input: &[u8]) -> IResult<&[u8], &str> {
@@ -80,7 +96,7 @@ fn parse_simple_string(input: &[u8]) -> IResult<&[u8], &str> {
     .parse(input)
 }
 
-fn parse_binary_string(input: &[u8]) -> IResult<&[u8], &str> {
+fn parse_bulk_string(input: &[u8]) -> IResult<&[u8], &str> {
     let (input, len) = delimited(char('$'), parse_number, tag("\r\n")).parse(input)?;
     let (input, data) =
         map_res(terminated(take(len), tag("\r\n")), std::str::from_utf8).parse(input)?;
@@ -94,7 +110,7 @@ fn parse_number(input: &[u8]) -> IResult<&[u8], usize> {
 
 #[test]
 fn parse_array_test() {
-    println!("{:?}", parse_binary_string(b"$4\r\nECHO\r\n").unwrap());
+    println!("{:?}", parse_bulk_string(b"$4\r\nECHO\r\n").unwrap());
     println!(
         "{:?}",
         parse_array(b"*2\r\n$4\r\nECHO\r\n$4\r\nPING\r\n").unwrap()
