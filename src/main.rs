@@ -52,33 +52,41 @@ fn handle_client(mut stream: TcpStream, db: &Mutex<HashMap<String, (String, Opti
         let data = parse_array(&buf).unwrap().1;
         dbg!(&data);
 
-        let response = match data.as_slice() {
-            ["PING"] => build_simple_string("PONG"),
-            ["ECHO", message] => build_bulk_string(message),
-            ["GET", key] => match db.lock().unwrap().get(*key) {
-                Some((value, None)) => build_bulk_string(value),
-                Some((value, Some(expiry))) if SystemTime::now() < *expiry => {
-                    build_bulk_string(value)
+        let mut data_parts = data.into_iter();
+        let response = match data_parts.next().unwrap().to_ascii_uppercase().as_str() {
+            "PING" => build_simple_string("PONG"),
+            "ECHO" => build_bulk_string(data_parts.next().unwrap()),
+            "GET" => {
+                let key = data_parts.next().unwrap();
+
+                match db.lock().unwrap().get(key) {
+                    Some((value, None)) => build_bulk_string(value),
+                    Some((value, Some(expiry))) if SystemTime::now() < *expiry => {
+                        build_bulk_string(value)
+                    }
+                    _ => NULL_BULK_STR.into(),
                 }
-                _ => NULL_BULK_STR.into(),
-            },
-            ["SET", key, value] => {
-                assert!(db
-                    .lock()
-                    .unwrap()
-                    .insert(key.to_string(), (value.to_string(), None))
-                    .is_none());
-
-                build_simple_string("OK")
             }
-            ["SET", key, value, "PX", timeout] => {
-                let timeout = Duration::from_millis(timeout.parse().unwrap());
-                let expiry = SystemTime::now() + timeout;
+            "SET" => {
+                let key = data_parts.next().unwrap();
+                let value = data_parts.next().unwrap();
+                let expiry = if "PX"
+                    == data_parts
+                        .next()
+                        .map_or(String::new(), |s| s.to_ascii_uppercase())
+                {
+                    Some(
+                        SystemTime::now()
+                            + Duration::from_millis(data_parts.next().unwrap().parse().unwrap()),
+                    )
+                } else {
+                    None
+                };
 
                 assert!(db
                     .lock()
                     .unwrap()
-                    .insert(key.to_string(), (value.to_string(), Some(expiry)))
+                    .insert(key.to_string(), (value.to_string(), expiry))
                     .is_none());
 
                 build_simple_string("OK")
