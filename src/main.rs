@@ -7,6 +7,7 @@ use std::{
     net::{TcpListener, TcpStream},
     str::FromStr,
     sync::{Arc, Mutex},
+    time::{Duration, SystemTime},
 };
 
 use nom::{
@@ -44,29 +45,42 @@ fn main() {
     })
 }
 
-fn handle_client(mut stream: TcpStream, db: &Mutex<HashMap<String, String>>) {
+fn handle_client(mut stream: TcpStream, db: &Mutex<HashMap<String, (String, Option<SystemTime>)>>) {
     let mut buf = [0; 512];
 
     while stream.read(&mut buf).unwrap() > 0 {
-        let data = parse_array(&mut buf).unwrap().1;
+        let data = parse_array(&buf).unwrap().1;
         dbg!(&data);
 
         let response = match data.as_slice() {
             ["PING"] => build_simple_string("PONG"),
             ["ECHO", message] => build_bulk_string(message),
-            ["GET", key] => {
-                if let Some(value) = db.lock().unwrap().get(*key) {
+            ["GET", key] => match db.lock().unwrap().get(*key) {
+                Some((value, None)) => build_bulk_string(value),
+                Some((value, Some(expiry))) if SystemTime::now() < *expiry => {
                     build_bulk_string(value)
-                } else {
-                    "$-1\r\n".into()
                 }
-            }
+                _ => NULL_BULK_STR.into(),
+            },
             ["SET", key, value] => {
                 assert!(db
                     .lock()
                     .unwrap()
-                    .insert(key.to_string(), value.to_string())
+                    .insert(key.to_string(), (value.to_string(), None))
                     .is_none());
+
+                build_simple_string("OK")
+            }
+            ["SET", key, value, "PX", timeout] => {
+                let timeout = Duration::from_millis(timeout.parse().unwrap());
+                let expiry = SystemTime::now() + timeout;
+
+                assert!(db
+                    .lock()
+                    .unwrap()
+                    .insert(key.to_string(), (value.to_string(), Some(expiry)))
+                    .is_none());
+
                 build_simple_string("OK")
             }
             _ => unimplemented!(),
@@ -75,6 +89,8 @@ fn handle_client(mut stream: TcpStream, db: &Mutex<HashMap<String, String>>) {
         stream.write_all(response.as_bytes()).unwrap();
     }
 }
+
+const NULL_BULK_STR: &str = "$-1\r\n";
 
 fn build_bulk_string(data: &str) -> String {
     format!("${}\r\n{}\r\n", data.len(), data)
@@ -89,13 +105,13 @@ fn parse_array(input: &[u8]) -> IResult<&[u8], Vec<&str>> {
     many(0..=num_elements, parse_bulk_string).parse(input)
 }
 
-fn parse_simple_string(input: &[u8]) -> IResult<&[u8], &str> {
-    map_res(
-        delimited(char('+'), take_until("\r\n"), tag("\r\n")),
-        std::str::from_utf8,
-    )
-    .parse(input)
-}
+// fn parse_simple_string(input: &[u8]) -> IResult<&[u8], &str> {
+//     map_res(
+//         delimited(char('+'), take_until("\r\n"), tag("\r\n")),
+//         std::str::from_utf8,
+//     )
+//     .parse(input)
+// }
 
 fn parse_bulk_string(input: &[u8]) -> IResult<&[u8], &str> {
     let (input, len) = delimited(char('$'), parse_number, tag("\r\n")).parse(input)?;
