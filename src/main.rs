@@ -62,10 +62,11 @@ fn handle_client(mut stream: TcpStream, db: &Mutex<HashMap<String, String>>) {
                 }
             }
             ["SET", key, value] => {
-                db.lock()
+                assert!(db
+                    .lock()
                     .unwrap()
                     .insert(key.to_string(), value.to_string())
-                    .unwrap();
+                    .is_none());
                 build_simple_string("OK")
             }
             _ => unimplemented!(),
