@@ -13,15 +13,10 @@ fn main() {
     for stream in listener.incoming() {
         match stream {
             Ok(mut stream) => {
-                // let mut input = String::new();
-                // stream.read_to_string(&mut input).unwrap();
-
-                // for request in input.lines() {
-                //     if request.starts_with("PING") {
-                //         stream.write_all(b"+PONG\r\n").unwrap()
-                //     }
-                // }
-                stream.write_all(b"+PONG\r\n").unwrap()
+                let mut buf = Vec::new();
+                while stream.read(&mut buf).unwrap() > 0 {
+                    stream.write_all(b"+PONG\r\n").unwrap();
+                }
             }
             Err(e) => {
                 println!("error: {}", e);
