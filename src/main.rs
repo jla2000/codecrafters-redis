@@ -76,6 +76,18 @@ fn handle_client(mut stream: TcpStream, db: &Mutex<Database>) {
 
                 send_integer(&mut stream, list.len())
             }
+            "LPOP" => {
+                let key = cmd_parts.next().unwrap();
+
+                let mut db = db.lock().unwrap();
+                let list = db.lists.entry(key.into()).or_default();
+
+                if !list.is_empty() {
+                    send_bulk_string(&mut stream, &list.remove(0));
+                } else {
+                    send_null_bulk_string(&mut stream);
+                }
+            }
             "GET" => {
                 let key = cmd_parts.next().unwrap();
 
