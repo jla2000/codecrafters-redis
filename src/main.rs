@@ -117,7 +117,7 @@ fn handle_client(mut stream: TcpStream, db: &Mutex<Database>) {
                 let db = db.lock().unwrap();
                 let list = db.lists.get(key).unwrap_or(&EMPTY_LIST);
 
-                let range = start_idx.max(list.len())..=end_idx.max(list.len());
+                let range = start_idx.max(list.len() - 1)..=end_idx.max(list.len() - 1);
                 send_string_array(&mut stream, &list[range]);
             }
             _ => unimplemented!(),
