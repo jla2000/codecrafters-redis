@@ -30,9 +30,6 @@ struct Database {
 }
 
 fn main() {
-    // You can use print statements as follows for debugging, they'll be visible when running tests.
-    println!("Logs from your program will appear here!");
-
     let listener = TcpListener::bind("127.0.0.1:6379").unwrap();
     let db = Mutex::new(Database::default());
 
@@ -74,10 +71,16 @@ fn handle_client(mut stream: TcpStream, db: &Mutex<Database>) {
             "GET" => {
                 let key = cmd_parts.next().unwrap();
 
-                match db.lock().unwrap().values.get(key) {
+                let values = &mut db.lock().unwrap().values;
+                match values.get(key) {
                     Some((value, None)) => send_bulk_string(&mut stream, value),
-                    Some((value, Some(expiry))) if SystemTime::now() < *expiry => {
-                        send_bulk_string(&mut stream, value)
+                    Some((value, Some(expiry))) => {
+                        if SystemTime::now() < *expiry {
+                            send_bulk_string(&mut stream, value)
+                        } else {
+                            values.remove(key).unwrap();
+                            send_null_bulk_string(&mut stream);
+                        }
                     }
                     _ => send_null_bulk_string(&mut stream),
                 }
@@ -109,12 +112,25 @@ fn handle_client(mut stream: TcpStream, db: &Mutex<Database>) {
             }
             "LRANGE" => {
                 let key = cmd_parts.next().unwrap();
-                let start_idx: usize = cmd_parts.next().unwrap().parse().unwrap();
-                let end_idx: usize = cmd_parts.next().unwrap().parse().unwrap();
+
+                let start_idx: isize = cmd_parts.next().unwrap().parse().unwrap();
+                let end_idx: isize = cmd_parts.next().unwrap().parse().unwrap();
 
                 match db.lock().unwrap().lists.get(key) {
                     Some(list) if !list.is_empty() => {
-                        let range = start_idx.min(list.len() - 1)..=end_idx.min(list.len() - 1);
+                        let abs_start_idx = if start_idx < 0 {
+                            list.len() - usize::try_from(start_idx).unwrap()
+                        } else {
+                            start_idx.try_into().unwrap()
+                        };
+                        let abs_end_idx: usize = if end_idx < 0 {
+                            list.len() - usize::try_from(end_idx).unwrap()
+                        } else {
+                            end_idx.try_into().unwrap()
+                        };
+
+                        let range =
+                            abs_start_idx.min(list.len() - 1)..=abs_end_idx.min(list.len() - 1);
                         send_string_array(&mut stream, &list[range]);
                     }
                     _ => {
