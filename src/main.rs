@@ -113,34 +113,13 @@ fn handle_client(mut stream: TcpStream, db: &Mutex<Database>) {
             "LRANGE" => {
                 let key = cmd_parts.next().unwrap();
 
-                let start_idx: isize = cmd_parts.next().unwrap().parse().unwrap();
-                let end_idx: isize = cmd_parts.next().unwrap().parse().unwrap();
+                let start_idx = cmd_parts.next().unwrap().parse().unwrap();
+                let end_idx = cmd_parts.next().unwrap().parse().unwrap();
 
                 match db.lock().unwrap().lists.get(key) {
                     Some(list) if !list.is_empty() => {
-                        let abs_start_idx = if start_idx < 0 {
-                            let abs = usize::try_from(start_idx.abs()).unwrap();
-                            if abs < list.len() {
-                                list.len() - abs
-                            } else {
-                                0
-                            }
-                        } else {
-                            start_idx.try_into().unwrap()
-                        };
-                        let abs_end_idx: usize = if end_idx < 0 {
-                            let abs = usize::try_from(end_idx.abs()).unwrap();
-                            if abs < list.len() {
-                                list.len() - abs
-                            } else {
-                                0
-                            }
-                        } else {
-                            end_idx.try_into().unwrap()
-                        };
-
                         let range =
-                            abs_start_idx.min(list.len() - 1)..=abs_end_idx.min(list.len() - 1);
+                            handle_index(start_idx, list.len())..=handle_index(end_idx, list.len());
                         send_string_array(&mut stream, &list[range]);
                     }
                     _ => {
@@ -151,6 +130,17 @@ fn handle_client(mut stream: TcpStream, db: &Mutex<Database>) {
             _ => unimplemented!(),
         };
     }
+}
+
+fn handle_index(index: isize, list_len: usize) -> usize {
+    let abs_index = if index < 0 {
+        let abs = usize::try_from(index.abs()).unwrap();
+        list_len.saturating_sub(abs)
+    } else {
+        index.try_into().unwrap()
+    };
+
+    abs_index.min(list_len - 1)
 }
 
 fn send_string_array(stream: &mut TcpStream, data: &[String]) {
