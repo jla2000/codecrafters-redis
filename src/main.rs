@@ -53,7 +53,6 @@ fn handle_client(mut stream: TcpStream, db: &Mutex<Database>) {
 
     while stream.read(&mut buf).unwrap() > 0 {
         let data = parse_array(&buf).unwrap().1;
-        dbg!(&data);
 
         let mut cmd_parts = data.into_iter();
         match cmd_parts.next().unwrap().to_ascii_uppercase().as_str() {
@@ -73,10 +72,7 @@ fn handle_client(mut stream: TcpStream, db: &Mutex<Database>) {
 
                 let mut db = db.lock().unwrap();
                 let list = db.lists.entry(key.into()).or_default();
-
-                dbg!(&list);
-                list.splice(..0, cmd_parts.map(String::from));
-                dbg!(&list);
+                list.splice(..0, cmd_parts.map(String::from).rev());
 
                 send_integer(&mut stream, list.len())
             }
@@ -132,7 +128,6 @@ fn handle_client(mut stream: TcpStream, db: &Mutex<Database>) {
                     Some(list) if !list.is_empty() => {
                         let range =
                             handle_index(start_idx, list.len())..=handle_index(end_idx, list.len());
-                        dbg!(&range);
                         send_string_array(&mut stream, &list[range]);
                     }
                     _ => {
