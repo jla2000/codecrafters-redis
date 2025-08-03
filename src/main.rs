@@ -68,6 +68,15 @@ fn handle_client(mut stream: TcpStream, db: &Mutex<Database>) {
 
                 send_integer(&mut stream, list.len())
             }
+            "LPUSH" => {
+                let key = cmd_parts.next().unwrap();
+
+                let mut db = db.lock().unwrap();
+                let list = db.lists.entry(key.into()).or_default();
+                list.splice(0..0, cmd_parts.map(String::from));
+
+                send_integer(&mut stream, list.len())
+            }
             "GET" => {
                 let key = cmd_parts.next().unwrap();
 
