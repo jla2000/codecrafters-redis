@@ -58,41 +58,41 @@ fn handle_client(mut stream: TcpStream, db: &Mutex<Database>) {
         let data = parse_array(&buf).unwrap().1;
         dbg!(&data);
 
-        let mut data_parts = data.into_iter();
-        let response = match data_parts.next().unwrap().to_ascii_uppercase().as_str() {
-            "PING" => build_simple_string("PONG"),
-            "ECHO" => build_bulk_string(data_parts.next().unwrap()),
+        let mut cmd_parts = data.into_iter();
+        match cmd_parts.next().unwrap().to_ascii_uppercase().as_str() {
+            "PING" => send_simple_string(&mut stream, "PONG"),
+            "ECHO" => send_bulk_string(&mut stream, cmd_parts.next().unwrap()),
             "RPUSH" => {
-                let key = data_parts.next().unwrap();
+                let key = cmd_parts.next().unwrap();
 
                 let mut db = db.lock().unwrap();
                 let list = db.lists.entry(key.into()).or_default();
-                list.extend(data_parts.map(String::from));
+                list.extend(cmd_parts.map(String::from));
 
-                build_integer(list.len())
+                send_integer(&mut stream, list.len())
             }
             "GET" => {
-                let key = data_parts.next().unwrap();
+                let key = cmd_parts.next().unwrap();
 
                 match db.lock().unwrap().values.get(key) {
-                    Some((value, None)) => build_bulk_string(value),
+                    Some((value, None)) => send_bulk_string(&mut stream, value),
                     Some((value, Some(expiry))) if SystemTime::now() < *expiry => {
-                        build_bulk_string(value)
+                        send_bulk_string(&mut stream, value)
                     }
-                    _ => NULL_BULK_STR.into(),
+                    _ => send_null_bulk_string(&mut stream),
                 }
             }
             "SET" => {
-                let key = data_parts.next().unwrap();
-                let value = data_parts.next().unwrap();
+                let key = cmd_parts.next().unwrap();
+                let value = cmd_parts.next().unwrap();
                 let expiry = if "PX"
-                    == data_parts
+                    == cmd_parts
                         .next()
                         .map_or(String::new(), |s| s.to_ascii_uppercase())
                 {
                     Some(
                         SystemTime::now()
-                            + Duration::from_millis(data_parts.next().unwrap().parse().unwrap()),
+                            + Duration::from_millis(cmd_parts.next().unwrap().parse().unwrap()),
                     )
                 } else {
                     None
@@ -105,27 +105,45 @@ fn handle_client(mut stream: TcpStream, db: &Mutex<Database>) {
                     .insert(key.to_string(), (value.to_string(), expiry))
                     .is_none());
 
-                build_simple_string("OK")
+                send_simple_string(&mut stream, "OK")
+            }
+            "LRANGE" => {
+                static EMPTY_LIST: Vec<String> = Vec::new();
+
+                let key = cmd_parts.next().unwrap();
+                let start_idx = cmd_parts.next().unwrap().parse().unwrap();
+                let end_idx = cmd_parts.next().unwrap().parse().unwrap();
+
+                let db = db.lock().unwrap();
+                let list = db.lists.get(key).unwrap_or(&EMPTY_LIST);
+
+                send_string_array(&mut stream, &list[start_idx..=end_idx]);
             }
             _ => unimplemented!(),
         };
-
-        stream.write_all(response.as_bytes()).unwrap();
     }
 }
 
-const NULL_BULK_STR: &str = "$-1\r\n";
-
-fn build_bulk_string(data: &str) -> String {
-    format!("${}\r\n{}\r\n", data.len(), data)
+fn send_string_array(stream: &mut TcpStream, data: &[String]) {
+    write!(stream, "*{}\r\n", data.len()).unwrap();
+    data.iter()
+        .for_each(|element| send_bulk_string(stream, element));
 }
 
-fn build_simple_string(data: &str) -> String {
-    format!("+{data}\r\n")
+fn send_null_bulk_string(stream: &mut TcpStream) {
+    write!(stream, "$-1\r\n").unwrap();
 }
 
-fn build_integer(value: usize) -> String {
-    format!(":{value}\r\n")
+fn send_bulk_string(stream: &mut TcpStream, data: &str) {
+    write!(stream, "${}\r\n{}\r\n", data.len(), data).unwrap();
+}
+
+fn send_simple_string(stream: &mut TcpStream, data: &str) {
+    write!(stream, "+{data}\r\n").unwrap();
+}
+
+fn send_integer(stream: &mut TcpStream, value: usize) {
+    write!(stream, ":{value}\r\n").unwrap()
 }
 
 fn parse_array(input: &[u8]) -> IResult<&[u8], Vec<&str>> {
