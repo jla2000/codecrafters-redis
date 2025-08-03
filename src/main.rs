@@ -82,23 +82,14 @@ fn handle_client(mut stream: TcpStream, db: &Mutex<Database>) {
                 let mut db = db.lock().unwrap();
                 let list = db.lists.entry(key.into()).or_default();
 
-                let amount: usize = if let Some(amount_string) = cmd_parts.next() {
-                    amount_string.parse().unwrap()
-                } else {
-                    1
-                };
-
-                if !list.is_empty() {
-                    if amount > 1 {
-                        send_string_array(
-                            &mut stream,
-                            list.drain(0..amount).collect::<Vec<_>>().as_slice(),
-                        );
-                    } else {
-                        send_bulk_string(&mut stream, &list.remove(0));
-                    }
-                } else {
-                    send_null_bulk_string(&mut stream);
+                let amount = cmd_parts.next().map_or(1, |s| s.parse::<usize>().unwrap());
+                match list.len() {
+                    0 => send_null_bulk_string(&mut stream),
+                    _ if amount > 1 => send_string_array(
+                        &mut stream,
+                        list.drain(0..amount).collect::<Vec<_>>().as_slice(),
+                    ),
+                    _ => send_bulk_string(&mut stream, &list.remove(0)),
                 }
             }
             "GET" => {
