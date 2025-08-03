@@ -119,12 +119,12 @@ fn handle_client(mut stream: TcpStream, db: &Mutex<Database>) {
                 match db.lock().unwrap().lists.get(key) {
                     Some(list) if !list.is_empty() => {
                         let abs_start_idx = if start_idx < 0 {
-                            list.len() - usize::try_from(start_idx).unwrap()
+                            list.len() - usize::try_from(start_idx.abs()).unwrap()
                         } else {
                             start_idx.try_into().unwrap()
                         };
                         let abs_end_idx: usize = if end_idx < 0 {
-                            list.len() - usize::try_from(end_idx).unwrap()
+                            list.len() - usize::try_from(end_idx.abs()).unwrap()
                         } else {
                             end_idx.try_into().unwrap()
                         };
