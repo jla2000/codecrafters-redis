@@ -3,7 +3,6 @@ use std::{
     io::{Read, Write},
     net::{TcpListener, TcpStream},
     os::fd::{AsFd, AsRawFd, RawFd},
-    sync::Mutex,
     time::{Duration, SystemTime},
 };
 
@@ -170,6 +169,9 @@ fn handle_client(stream: &mut TcpStream, db: &mut Database) {
                     Some(list) => send_integer(stream, list.len()),
                     None => send_integer(stream, 0),
                 }
+            }
+            "BLPOP" => {
+                send_null_bulk_string(stream);
             }
             _ => unimplemented!(),
         };
