@@ -132,6 +132,7 @@ fn handle_client(mut stream: TcpStream, db: &Mutex<Database>) {
                     Some(list) if !list.is_empty() => {
                         let range =
                             handle_index(start_idx, list.len())..=handle_index(end_idx, list.len());
+                        dbg!(&range);
                         send_string_array(&mut stream, &list[range]);
                     }
                     _ => {
