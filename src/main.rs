@@ -135,6 +135,13 @@ fn handle_client(mut stream: TcpStream, db: &Mutex<Database>) {
                     }
                 }
             }
+            "LLEN" => {
+                let key = cmd_parts.next().unwrap();
+                match db.lock().unwrap().lists.get(key) {
+                    Some(list) => send_integer(&mut stream, list.len()),
+                    None => send_integer(&mut stream, 0),
+                }
+            }
             _ => unimplemented!(),
         };
     }
