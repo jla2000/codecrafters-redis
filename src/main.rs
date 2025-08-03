@@ -108,22 +108,19 @@ fn handle_client(mut stream: TcpStream, db: &Mutex<Database>) {
                 send_simple_string(&mut stream, "OK")
             }
             "LRANGE" => {
-                static EMPTY_LIST: Vec<String> = Vec::new();
-
                 let key = cmd_parts.next().unwrap();
                 let start_idx: usize = cmd_parts.next().unwrap().parse().unwrap();
                 let end_idx: usize = cmd_parts.next().unwrap().parse().unwrap();
 
-                let db = db.lock().unwrap();
-                let list = db.lists.get(key).unwrap_or(&EMPTY_LIST);
-
-                let range = if !list.is_empty() {
-                    start_idx.min(list.len() - 1)..=end_idx.min(list.len() - 1)
-                } else {
-                    0..=0
-                };
-
-                send_string_array(&mut stream, &list[range]);
+                match db.lock().unwrap().lists.get(key) {
+                    Some(list) if !list.is_empty() => {
+                        let range = start_idx.min(list.len() - 1)..=end_idx.min(list.len() - 1);
+                        send_string_array(&mut stream, &list[range]);
+                    }
+                    _ => {
+                        send_string_array(&mut stream, &[]);
+                    }
+                }
             }
             _ => unimplemented!(),
         };
