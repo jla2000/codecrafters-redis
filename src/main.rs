@@ -2,10 +2,15 @@ use std::{
     collections::HashMap,
     io::{Read, Write},
     net::{TcpListener, TcpStream},
+    os::fd::{AsFd, AsRawFd, RawFd},
     sync::Mutex,
     time::{Duration, SystemTime},
 };
 
+use nix::{
+    poll::PollTimeout,
+    sys::epoll::{Epoll, EpollCreateFlags, EpollEvent, EpollFlags},
+};
 use nom::{
     bytes::complete::{take, take_while},
     combinator::map_res,
@@ -23,24 +28,46 @@ struct Database {
 
 fn main() {
     let listener = TcpListener::bind("127.0.0.1:6379").unwrap();
-    let db = Mutex::new(Database::default());
+    listener.set_nonblocking(true).unwrap();
 
-    std::thread::scope(|s| {
-        for stream in listener.incoming() {
-            match stream {
-                Ok(stream) => {
-                    println!("Client connected");
-                    s.spawn(|| handle_client(stream, &db));
-                }
-                Err(e) => {
-                    println!("error: {}", e);
-                }
+    let epoll = Epoll::new(EpollCreateFlags::empty()).unwrap();
+    epoll
+        .add(
+            listener.as_fd(),
+            EpollEvent::new(EpollFlags::EPOLLIN, listener.as_raw_fd() as u64),
+        )
+        .unwrap();
+
+    let mut db = Database::default();
+    let mut event_buffer = [EpollEvent::empty(); 16];
+    let mut clients = HashMap::new();
+
+    loop {
+        let num_events = epoll.wait(&mut event_buffer, PollTimeout::NONE).unwrap();
+
+        for event in &event_buffer[..num_events] {
+            let fd = event.data() as RawFd;
+            if fd == listener.as_raw_fd() {
+                let (stream, _) = listener.accept().unwrap();
+                stream.set_nonblocking(true).unwrap();
+
+                epoll
+                    .add(
+                        stream.as_fd(),
+                        EpollEvent::new(EpollFlags::EPOLLIN, stream.as_raw_fd() as u64),
+                    )
+                    .unwrap();
+
+                clients.insert(stream.as_raw_fd(), stream);
+            } else {
+                let client = clients.get_mut(&fd).unwrap();
+                handle_client(client, &mut db);
             }
         }
-    })
+    }
 }
 
-fn handle_client(mut stream: TcpStream, db: &Mutex<Database>) {
+fn handle_client(stream: &mut TcpStream, db: &mut Database) {
     let mut buf = [0; 512];
 
     while stream.read(&mut buf).unwrap() > 0 {
@@ -48,57 +75,53 @@ fn handle_client(mut stream: TcpStream, db: &Mutex<Database>) {
 
         let mut cmd_parts = data.into_iter();
         match cmd_parts.next().unwrap().to_ascii_uppercase().as_str() {
-            "PING" => send_simple_string(&mut stream, "PONG"),
-            "ECHO" => send_bulk_string(&mut stream, cmd_parts.next().unwrap()),
+            "PING" => send_simple_string(stream, "PONG"),
+            "ECHO" => send_bulk_string(stream, cmd_parts.next().unwrap()),
             "RPUSH" => {
                 let key = cmd_parts.next().unwrap();
 
-                let mut db = db.lock().unwrap();
                 let list = db.lists.entry(key.into()).or_default();
                 list.extend(cmd_parts.map(String::from));
 
-                send_integer(&mut stream, list.len())
+                send_integer(stream, list.len())
             }
             "LPUSH" => {
                 let key = cmd_parts.next().unwrap();
 
-                let mut db = db.lock().unwrap();
                 let list = db.lists.entry(key.into()).or_default();
                 list.splice(..0, cmd_parts.map(String::from).rev());
 
-                send_integer(&mut stream, list.len())
+                send_integer(stream, list.len())
             }
             "LPOP" => {
                 let key = cmd_parts.next().unwrap();
 
-                let mut db = db.lock().unwrap();
                 let list = db.lists.entry(key.into()).or_default();
 
                 let amount = cmd_parts.next().map_or(1, |s| s.parse::<usize>().unwrap());
                 match list.len() {
-                    0 => send_null_bulk_string(&mut stream),
+                    0 => send_null_bulk_string(stream),
                     _ if amount > 1 => send_string_array(
-                        &mut stream,
+                        stream,
                         list.drain(0..amount).collect::<Vec<_>>().as_slice(),
                     ),
-                    _ => send_bulk_string(&mut stream, &list.remove(0)),
+                    _ => send_bulk_string(stream, &list.remove(0)),
                 }
             }
             "GET" => {
                 let key = cmd_parts.next().unwrap();
 
-                let values = &mut db.lock().unwrap().values;
-                match values.get(key) {
-                    Some((value, None)) => send_bulk_string(&mut stream, value),
+                match db.values.get(key) {
+                    Some((value, None)) => send_bulk_string(stream, value),
                     Some((value, Some(expiry))) => {
                         if SystemTime::now() < *expiry {
-                            send_bulk_string(&mut stream, value)
+                            send_bulk_string(stream, value)
                         } else {
-                            values.remove(key).unwrap();
-                            send_null_bulk_string(&mut stream);
+                            db.values.remove(key).unwrap();
+                            send_null_bulk_string(stream);
                         }
                     }
-                    _ => send_null_bulk_string(&mut stream),
+                    _ => send_null_bulk_string(stream),
                 }
             }
             "SET" => {
@@ -118,13 +141,11 @@ fn handle_client(mut stream: TcpStream, db: &Mutex<Database>) {
                 };
 
                 assert!(db
-                    .lock()
-                    .unwrap()
                     .values
                     .insert(key.to_string(), (value.to_string(), expiry))
                     .is_none());
 
-                send_simple_string(&mut stream, "OK")
+                send_simple_string(stream, "OK")
             }
             "LRANGE" => {
                 let key = cmd_parts.next().unwrap();
@@ -132,22 +153,22 @@ fn handle_client(mut stream: TcpStream, db: &Mutex<Database>) {
                 let start_idx = cmd_parts.next().unwrap().parse().unwrap();
                 let end_idx = cmd_parts.next().unwrap().parse().unwrap();
 
-                match db.lock().unwrap().lists.get(key) {
+                match db.lists.get(key) {
                     Some(list) if !list.is_empty() => {
                         let range =
                             handle_index(start_idx, list.len())..=handle_index(end_idx, list.len());
-                        send_string_array(&mut stream, &list[range]);
+                        send_string_array(stream, &list[range]);
                     }
                     _ => {
-                        send_string_array(&mut stream, &[]);
+                        send_string_array(stream, &[]);
                     }
                 }
             }
             "LLEN" => {
                 let key = cmd_parts.next().unwrap();
-                match db.lock().unwrap().lists.get(key) {
-                    Some(list) => send_integer(&mut stream, list.len()),
-                    None => send_integer(&mut stream, 0),
+                match db.lists.get(key) {
+                    Some(list) => send_integer(stream, list.len()),
+                    None => send_integer(stream, 0),
                 }
             }
             _ => unimplemented!(),
