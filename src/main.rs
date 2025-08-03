@@ -73,7 +73,10 @@ fn handle_client(mut stream: TcpStream, db: &Mutex<Database>) {
 
                 let mut db = db.lock().unwrap();
                 let list = db.lists.entry(key.into()).or_default();
-                list.splice(0..0, cmd_parts.map(String::from));
+
+                dbg!(&list);
+                list.splice(..0, cmd_parts.map(String::from));
+                dbg!(&list);
 
                 send_integer(&mut stream, list.len())
             }
