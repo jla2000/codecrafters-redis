@@ -1,27 +1,19 @@
-#![allow(unused_imports)]
-use core::num;
 use std::{
-    collections::{HashMap, VecDeque},
-    fmt::format,
+    collections::HashMap,
     io::{Read, Write},
     net::{TcpListener, TcpStream},
-    str::FromStr,
-    sync::{Arc, Mutex},
+    sync::Mutex,
     time::{Duration, SystemTime},
 };
 
 use nom::{
-    branch::alt,
-    bytes::complete::{take, take_until, take_while},
+    bytes::complete::{take, take_while},
     combinator::map_res,
-    error::ParseError,
-    multi::{fold, many, many_m_n},
-    number,
-    sequence::{preceded, terminated},
+    multi::many,
+    sequence::terminated,
     IResult, Parser,
 };
 use nom::{bytes::tag, character::complete::char, sequence::delimited};
-use strum::EnumString;
 
 #[derive(Default)]
 struct Database {
