@@ -44,7 +44,7 @@ fn main() {
 
     let mut db = Database::default();
     let mut event_buffer = [EpollEvent::empty(); 16];
-    let mut clients = HashMap::new();
+    let mut streams = HashMap::new();
     let mut timeouts = BTreeMap::new();
 
     loop {
@@ -55,7 +55,7 @@ fn main() {
                         db.values.remove(key.as_str());
                     }
                     TimeoutAction::SendNullResponse(fd) => {
-                        let stream = clients.get_mut(fd).unwrap();
+                        let stream = streams.get_mut(fd).unwrap();
                         send_null_bulk_string(stream);
                     }
                 }
@@ -92,19 +92,19 @@ fn main() {
                             )
                             .unwrap();
 
-                        clients.insert(stream.as_raw_fd(), stream);
+                        streams.insert(stream.as_raw_fd(), stream);
                     }
-                    Err(e) => println!("Failed to accept client: {e}"),
+                    Err(e) => println!("Failed to accept stream: {e}"),
                 }
             } else {
-                let client = clients.get_mut(&fd).unwrap();
-                handle_client(client, &mut db, &mut timeouts);
+                let stream = streams.get_mut(&fd).unwrap();
+                handle_stream(stream, &mut db, &mut timeouts);
             }
         }
     }
 }
 
-fn handle_client(
+fn handle_stream(
     stream: &mut TcpStream,
     db: &mut Database,
     timeouts: &mut BTreeMap<Instant, TimeoutAction>,
