@@ -207,11 +207,13 @@ fn handle_stream(
                     let timeout: u64 = cmd_parts.next().unwrap().parse().unwrap();
 
                     let list = db.lists.entry(key.into()).or_default();
-                    if list.is_empty() && timeout > 0 {
-                        timeouts.insert(
-                            Instant::now() + Duration::from_millis(timeout),
-                            TimeoutAction::SendNullResponse(stream.as_raw_fd()),
-                        );
+                    if list.is_empty() {
+                        if timeout > 0 {
+                            timeouts.insert(
+                                Instant::now() + Duration::from_millis(timeout),
+                                TimeoutAction::SendNullResponse(stream.as_raw_fd()),
+                            );
+                        }
                     } else {
                         let element = list.drain(0..amount).next().unwrap();
                         send_bulk_string(stream, &element);
