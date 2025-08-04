@@ -1,9 +1,9 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     io::{Read, Write},
     net::{TcpListener, TcpStream},
     os::fd::{AsFd, AsRawFd, RawFd},
-    time::{Duration, SystemTime},
+    time::{Duration, Instant},
 };
 
 use nix::{
@@ -21,8 +21,13 @@ use nom::{bytes::tag, character::complete::char, sequence::delimited};
 
 #[derive(Default)]
 struct Database {
-    values: HashMap<String, (String, Option<SystemTime>)>,
+    values: HashMap<String, String>,
     lists: HashMap<String, Vec<String>>,
+}
+
+enum TimeoutAction {
+    InvalidateEntry(String),
+    SendNullResponse(RawFd),
 }
 
 fn main() {
@@ -40,9 +45,38 @@ fn main() {
     let mut db = Database::default();
     let mut event_buffer = [EpollEvent::empty(); 16];
     let mut clients = HashMap::new();
+    let mut timeouts = BTreeMap::new();
 
     loop {
-        let num_events = epoll.wait(&mut event_buffer, PollTimeout::NONE).unwrap();
+        while let Some((timeout, action)) = timeouts.first_key_value() {
+            if Instant::now() >= *timeout {
+                match action {
+                    TimeoutAction::InvalidateEntry(key) => {
+                        db.values.remove(key.as_str());
+                    }
+                    TimeoutAction::SendNullResponse(fd) => {
+                        let stream = clients.get_mut(fd).unwrap();
+                        send_null_bulk_string(stream);
+                    }
+                }
+
+                timeouts.pop_first();
+            } else {
+                break;
+            }
+        }
+
+        let poll_timeout = if let Some((timeout, _)) = timeouts.first_key_value() {
+            timeout
+                .duration_since(Instant::now())
+                .as_millis()
+                .try_into()
+                .unwrap()
+        } else {
+            PollTimeout::NONE
+        };
+
+        let num_events = epoll.wait(&mut event_buffer, poll_timeout).unwrap();
 
         for event in &event_buffer[..num_events] {
             let fd = event.data() as RawFd;
@@ -64,13 +98,17 @@ fn main() {
                 }
             } else {
                 let client = clients.get_mut(&fd).unwrap();
-                handle_client(client, &mut db);
+                handle_client(client, &mut db, &mut timeouts);
             }
         }
     }
 }
 
-fn handle_client(stream: &mut TcpStream, db: &mut Database) {
+fn handle_client(
+    stream: &mut TcpStream,
+    db: &mut Database,
+    timeouts: &mut BTreeMap<Instant, TimeoutAction>,
+) {
     let mut buf = [0; 512];
 
     match stream.read(&mut buf) {
@@ -116,37 +154,26 @@ fn handle_client(stream: &mut TcpStream, db: &mut Database) {
                     let key = cmd_parts.next().unwrap();
 
                     match db.values.get(key) {
-                        Some((value, None)) => send_bulk_string(stream, value),
-                        Some((value, Some(expiry))) => {
-                            if SystemTime::now() < *expiry {
-                                send_bulk_string(stream, value)
-                            } else {
-                                db.values.remove(key).unwrap();
-                                send_null_bulk_string(stream);
-                            }
-                        }
+                        Some(value) => send_bulk_string(stream, value),
                         _ => send_null_bulk_string(stream),
                     }
                 }
                 "SET" => {
                     let key = cmd_parts.next().unwrap();
                     let value = cmd_parts.next().unwrap();
-                    let expiry = if "PX"
+                    if "PX"
                         == cmd_parts
                             .next()
                             .map_or(String::new(), |s| s.to_ascii_uppercase())
                     {
-                        Some(
-                            SystemTime::now()
-                                + Duration::from_millis(cmd_parts.next().unwrap().parse().unwrap()),
-                        )
-                    } else {
-                        None
-                    };
+                        let timeout = Instant::now()
+                            + Duration::from_millis(cmd_parts.next().unwrap().parse().unwrap());
+                        timeouts.insert(timeout, TimeoutAction::InvalidateEntry(key.into()));
+                    }
 
                     assert!(db
                         .values
-                        .insert(key.to_string(), (value.to_string(), expiry))
+                        .insert(key.to_string(), value.to_string())
                         .is_none());
 
                     send_simple_string(stream, "OK")
@@ -176,7 +203,19 @@ fn handle_client(stream: &mut TcpStream, db: &mut Database) {
                     }
                 }
                 "BLPOP" => {
-                    send_null_bulk_string(stream);
+                    let key = cmd_parts.next().unwrap();
+                    let timeout: u64 = cmd_parts.next().unwrap().parse().unwrap();
+
+                    let list = db.lists.entry(key.into()).or_default();
+                    if list.is_empty() && timeout > 0 {
+                        timeouts.insert(
+                            Instant::now() + Duration::from_millis(timeout),
+                            TimeoutAction::SendNullResponse(stream.as_raw_fd()),
+                        );
+                    } else {
+                        let element = list.drain(0..amount).next().unwrap();
+                        send_bulk_string(stream, &element);
+                    }
                 }
                 _ => unimplemented!(),
             }
