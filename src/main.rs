@@ -232,13 +232,13 @@ fn handle_stream(
                 }
                 "BLPOP" => {
                     let key = cmd_parts.next().unwrap();
-                    let timeout: u64 = cmd_parts.next().unwrap().parse().unwrap();
+                    let timeout: f32 = cmd_parts.next().unwrap().parse().unwrap();
 
                     let list = db.lists.entry(key.into()).or_default();
                     if list.content.is_empty() {
-                        if timeout > 0 {
+                        if timeout > 0.0 {
                             timeouts.insert(
-                                Instant::now() + Duration::from_millis(timeout),
+                                Instant::now() + Duration::from_secs_f32(timeout),
                                 TimeoutAction::StopWaiting(stream.as_raw_fd(), key.into()),
                             );
                         }
