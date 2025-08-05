@@ -246,6 +246,7 @@ fn handle_stream(
                                 TimeoutAction::StopWaiting(stream.as_raw_fd(), key.into()),
                             );
                         }
+                        list.waiting.push_back(fd);
                     } else {
                         let element = list.content.drain(0..amount).next().unwrap();
                         send_bulk_string(stream, &element);
