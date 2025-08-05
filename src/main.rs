@@ -138,13 +138,11 @@ fn handle_stream(
                     list.content.extend(cmd_parts.map(String::from));
 
                     send_integer(stream, list.content.len());
-                    dbg!(&list);
 
-                    while list.content.len() >= list.waiting.len() && !list.waiting.is_empty() {
+                    while !list.content.is_empty() && !list.waiting.is_empty() {
                         let waiting_fd = list.waiting.pop_front().unwrap();
                         let waiting_client = streams.get_mut(&waiting_fd).unwrap();
 
-                        println!("Sending response to waiting {waiting_fd} waiting on {key}");
                         send_bulk_string(
                             waiting_client,
                             &list.content.drain(0..amount).next().unwrap(),
@@ -159,7 +157,7 @@ fn handle_stream(
 
                     send_integer(stream, list.content.len());
 
-                    while list.content.len() >= list.waiting.len() && !list.waiting.is_empty() {
+                    while !list.content.is_empty() && !list.waiting.is_empty() {
                         let waiting_client =
                             streams.get_mut(&list.waiting.pop_front().unwrap()).unwrap();
 
@@ -249,7 +247,6 @@ fn handle_stream(
                             );
                         }
                         list.waiting.push_back(fd);
-                        println!("Register {fd} waiting on {key}");
                     } else {
                         let element = list.content.drain(0..amount).next().unwrap();
                         send_bulk_string(stream, &element);
