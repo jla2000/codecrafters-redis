@@ -143,7 +143,8 @@ fn handle_stream(
                         let waiting_fd = list.waiting.pop_front().unwrap();
                         let waiting_client = streams.get_mut(&waiting_fd).unwrap();
 
-                        send_bulk_string(waiting_client, &list.content.drain(..1).next().unwrap());
+                        let element = list.content.drain(..1).next().unwrap();
+                        send_string_array(waiting_client, &[key.into(), element]);
                     }
                 }
                 "LPUSH" => {
@@ -155,10 +156,11 @@ fn handle_stream(
                     send_integer(stream, list.content.len());
 
                     while !list.content.is_empty() && !list.waiting.is_empty() {
-                        let waiting_client =
-                            streams.get_mut(&list.waiting.pop_front().unwrap()).unwrap();
+                        let waiting_fd = list.waiting.pop_front().unwrap();
+                        let waiting_client = streams.get_mut(&waiting_fd).unwrap();
 
-                        send_bulk_string(waiting_client, &list.content.drain(..1).next().unwrap());
+                        let element = list.content.drain(..1).next().unwrap();
+                        send_string_array(waiting_client, &[key.into(), element]);
                     }
                 }
                 "LPOP" => {
@@ -243,7 +245,7 @@ fn handle_stream(
                         list.waiting.push_back(fd);
                     } else {
                         let element = list.content.drain(..1).next().unwrap();
-                        send_bulk_string(stream, &element);
+                        send_string_array(stream, &[key.into(), element]);
                     }
                 }
                 _ => unimplemented!(),
