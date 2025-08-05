@@ -143,10 +143,7 @@ fn handle_stream(
                         let waiting_fd = list.waiting.pop_front().unwrap();
                         let waiting_client = streams.get_mut(&waiting_fd).unwrap();
 
-                        send_bulk_string(
-                            waiting_client,
-                            &list.content.drain(0..amount).next().unwrap(),
-                        );
+                        send_bulk_string(waiting_client, &list.content.drain(..1).next().unwrap());
                     }
                 }
                 "LPUSH" => {
@@ -161,10 +158,7 @@ fn handle_stream(
                         let waiting_client =
                             streams.get_mut(&list.waiting.pop_front().unwrap()).unwrap();
 
-                        send_bulk_string(
-                            waiting_client,
-                            &list.content.drain(0..amount).next().unwrap(),
-                        );
+                        send_bulk_string(waiting_client, &list.content.drain(..1).next().unwrap());
                     }
                 }
                 "LPOP" => {
@@ -248,7 +242,7 @@ fn handle_stream(
                         }
                         list.waiting.push_back(fd);
                     } else {
-                        let element = list.content.drain(0..amount).next().unwrap();
+                        let element = list.content.drain(..1).next().unwrap();
                         send_bulk_string(stream, &element);
                     }
                 }
