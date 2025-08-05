@@ -19,7 +19,7 @@ use nom::{
 };
 use nom::{bytes::tag, character::complete::char, sequence::delimited};
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 struct List {
     content: Vec<String>,
     waiting: VecDeque<RawFd>,
@@ -138,6 +138,7 @@ fn handle_stream(
                     list.content.extend(cmd_parts.map(String::from));
 
                     send_integer(stream, list.content.len());
+                    dbg!(&list);
 
                     while list.content.len() >= list.waiting.len() && !list.waiting.is_empty() {
                         let waiting_fd = list.waiting.pop_front().unwrap();
