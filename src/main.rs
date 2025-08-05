@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, VecDeque},
     io::{Read, Write},
     net::{TcpListener, TcpStream},
     os::fd::{AsFd, AsRawFd, RawFd},
@@ -20,14 +20,20 @@ use nom::{
 use nom::{bytes::tag, character::complete::char, sequence::delimited};
 
 #[derive(Default)]
+struct List {
+    content: Vec<String>,
+    waiting: VecDeque<RawFd>,
+}
+
+#[derive(Default)]
 struct Database {
     values: HashMap<String, String>,
-    lists: HashMap<String, Vec<String>>,
+    lists: HashMap<String, List>,
 }
 
 enum TimeoutAction {
     InvalidateEntry(String),
-    SendNullResponse(RawFd),
+    StopWaiting(RawFd, String),
 }
 
 fn main() {
@@ -54,9 +60,14 @@ fn main() {
                     TimeoutAction::InvalidateEntry(key) => {
                         db.values.remove(key.as_str());
                     }
-                    TimeoutAction::SendNullResponse(fd) => {
-                        let stream = streams.get_mut(fd).unwrap();
-                        send_null_bulk_string(stream);
+                    TimeoutAction::StopWaiting(fd, list_name) => {
+                        let list = db.lists.get_mut(list_name).unwrap();
+
+                        if let Some(wait_idx) = list.waiting.iter().position(|val| val == fd) {
+                            _ = list.waiting.remove(wait_idx);
+                            let stream = streams.get_mut(fd).unwrap();
+                            send_null_bulk_string(stream);
+                        }
                     }
                 }
 
@@ -97,20 +108,21 @@ fn main() {
                     Err(e) => println!("Failed to accept stream: {e}"),
                 }
             } else {
-                let stream = streams.get_mut(&fd).unwrap();
-                handle_stream(stream, &mut db, &mut timeouts);
+                handle_stream(fd, &mut streams, &mut db, &mut timeouts).unwrap();
             }
         }
     }
 }
 
 fn handle_stream(
-    stream: &mut TcpStream,
+    fd: RawFd,
+    streams: &mut HashMap<RawFd, TcpStream>,
     db: &mut Database,
     timeouts: &mut BTreeMap<Instant, TimeoutAction>,
-) {
+) -> std::io::Result<()> {
     let mut buf = [0; 512];
 
+    let stream = streams.get_mut(&fd).unwrap();
     match stream.read(&mut buf) {
         Ok(amount) if amount > 0 => {
             let data = parse_array(&buf).unwrap().1;
@@ -123,17 +135,37 @@ fn handle_stream(
                     let key = cmd_parts.next().unwrap();
 
                     let list = db.lists.entry(key.into()).or_default();
-                    list.extend(cmd_parts.map(String::from));
+                    list.content.extend(cmd_parts.map(String::from));
 
-                    send_integer(stream, list.len())
+                    send_integer(stream, list.content.len());
+
+                    while list.content.len() >= list.waiting.len() && !list.waiting.is_empty() {
+                        let waiting_client =
+                            streams.get_mut(&list.waiting.pop_front().unwrap()).unwrap();
+
+                        send_bulk_string(
+                            waiting_client,
+                            &list.content.drain(0..amount).next().unwrap(),
+                        );
+                    }
                 }
                 "LPUSH" => {
                     let key = cmd_parts.next().unwrap();
 
                     let list = db.lists.entry(key.into()).or_default();
-                    list.splice(..0, cmd_parts.map(String::from).rev());
+                    list.content.splice(..0, cmd_parts.map(String::from).rev());
 
-                    send_integer(stream, list.len())
+                    send_integer(stream, list.content.len());
+
+                    while list.content.len() >= list.waiting.len() && !list.waiting.is_empty() {
+                        let waiting_client =
+                            streams.get_mut(&list.waiting.pop_front().unwrap()).unwrap();
+
+                        send_bulk_string(
+                            waiting_client,
+                            &list.content.drain(0..amount).next().unwrap(),
+                        );
+                    }
                 }
                 "LPOP" => {
                     let key = cmd_parts.next().unwrap();
@@ -141,13 +173,13 @@ fn handle_stream(
                     let list = db.lists.entry(key.into()).or_default();
 
                     let amount = cmd_parts.next().map_or(1, |s| s.parse::<usize>().unwrap());
-                    match list.len() {
+                    match list.content.len() {
                         0 => send_null_bulk_string(stream),
                         _ if amount > 1 => send_string_array(
                             stream,
-                            list.drain(0..amount).collect::<Vec<_>>().as_slice(),
+                            list.content.drain(0..amount).collect::<Vec<_>>().as_slice(),
                         ),
-                        _ => send_bulk_string(stream, &list.remove(0)),
+                        _ => send_bulk_string(stream, &list.content.remove(0)),
                     }
                 }
                 "GET" => {
@@ -185,10 +217,10 @@ fn handle_stream(
                     let end_idx = cmd_parts.next().unwrap().parse().unwrap();
 
                     match db.lists.get(key) {
-                        Some(list) if !list.is_empty() => {
-                            let range = handle_index(start_idx, list.len())
-                                ..=handle_index(end_idx, list.len());
-                            send_string_array(stream, &list[range]);
+                        Some(list) if !list.content.is_empty() => {
+                            let range = handle_index(start_idx, list.content.len())
+                                ..=handle_index(end_idx, list.content.len());
+                            send_string_array(stream, &list.content[range]);
                         }
                         _ => {
                             send_string_array(stream, &[]);
@@ -198,7 +230,7 @@ fn handle_stream(
                 "LLEN" => {
                     let key = cmd_parts.next().unwrap();
                     match db.lists.get(key) {
-                        Some(list) => send_integer(stream, list.len()),
+                        Some(list) => send_integer(stream, list.content.len()),
                         None => send_integer(stream, 0),
                     }
                 }
@@ -207,23 +239,27 @@ fn handle_stream(
                     let timeout: u64 = cmd_parts.next().unwrap().parse().unwrap();
 
                     let list = db.lists.entry(key.into()).or_default();
-                    if list.is_empty() {
+                    if list.content.is_empty() {
                         if timeout > 0 {
                             timeouts.insert(
                                 Instant::now() + Duration::from_millis(timeout),
-                                TimeoutAction::SendNullResponse(stream.as_raw_fd()),
+                                TimeoutAction::StopWaiting(stream.as_raw_fd(), key.into()),
                             );
                         }
                     } else {
-                        let element = list.drain(0..amount).next().unwrap();
+                        let element = list.content.drain(0..amount).next().unwrap();
                         send_bulk_string(stream, &element);
                     }
                 }
                 _ => unimplemented!(),
             }
         }
-        _ => {}
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+        Err(e) => return Err(e),
     }
+
+    Ok(())
 }
 
 fn handle_index(index: isize, list_len: usize) -> usize {
