@@ -16,5 +16,10 @@
           redis
         ];
       };
+      packages.${system}.default = pkgs.rustPlatform.buildRustPackage {
+        name = "codecrafters-redis";
+        src = pkgs.lib.cleanSource ./.;
+        cargoLock.lockFile = ./Cargo.lock;
+      };
     };
 }
