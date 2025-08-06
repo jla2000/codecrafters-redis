@@ -18,6 +18,7 @@ use nom::{
     IResult, Parser,
 };
 use nom::{bytes::tag, character::complete::char, sequence::delimited};
+use ringbuffer::GrowableAllocRingBuffer;
 
 #[derive(Default, Debug)]
 struct List {
@@ -36,80 +37,145 @@ enum TimeoutAction {
     StopWaiting(RawFd, String),
 }
 
-fn main() {
-    let listener = TcpListener::bind("127.0.0.1:6379").unwrap();
-    listener.set_nonblocking(true).unwrap();
+#[derive(Debug)]
+enum Event {
+    DataReceived(RawFd),
+    InvalidateEntry(String),
+    StopWaiting(RawFd, String),
+}
 
-    let epoll = Epoll::new(EpollCreateFlags::empty()).unwrap();
-    epoll
-        .add(
-            listener.as_fd(),
-            EpollEvent::new(EpollFlags::EPOLLIN, listener.as_raw_fd() as u64),
-        )
-        .unwrap();
+struct Reactor {
+    pending_events: GrowableAllocRingBuffer<Event>,
+    timeouts: BTreeMap<Instant, Event>,
+    epoll: Epoll,
+    epoll_event_buffer: EpollEventBuffer,
+}
 
-    let mut db = Database::default();
-    let mut event_buffer = [EpollEvent::empty(); 16];
-    let mut streams = HashMap::new();
-    let mut timeouts = BTreeMap::new();
+struct EpollEventBuffer {
+    buffer: [EpollEvent; 32],
+    num_elements: usize,
+}
 
-    loop {
-        while let Some((timeout, action)) = timeouts.first_key_value() {
-            if Instant::now() >= *timeout {
-                match action {
-                    TimeoutAction::InvalidateEntry(key) => {
-                        db.values.remove(key.as_str());
-                    }
-                    TimeoutAction::StopWaiting(fd, list_name) => {
-                        let list = db.lists.get_mut(list_name).unwrap();
+impl Reactor {
+    fn register_oneshot(&mut self, fd: impl AsFd + Copy) {
+        self.epoll
+            .add(
+                fd,
+                EpollEvent::new(
+                    EpollFlags::EPOLLIN | EpollFlags::EPOLLONESHOT,
+                    fd.as_fd().as_raw_fd() as u64,
+                ),
+            )
+            .unwrap();
+    }
 
-                        if let Some(wait_idx) = list.waiting.iter().position(|val| val == fd) {
-                            _ = list.waiting.remove(wait_idx);
-                            let stream = streams.get_mut(fd).unwrap();
-                            send_null_bulk_string(stream);
-                        }
-                    }
+    fn reactivate_oneshot(&mut self, fd: impl AsFd + Copy) {
+        self.epoll
+            .modify(
+                fd,
+                &mut EpollEvent::new(
+                    EpollFlags::EPOLLIN | EpollFlags::EPOLLONESHOT,
+                    fd.as_fd().as_raw_fd() as u64,
+                ),
+            )
+            .unwrap();
+    }
+
+    fn register_timeout(&mut self, timeout: Instant, event: Event) {
+        _ = self.timeouts.insert(timeout, event);
+    }
+}
+
+impl Default for Reactor {
+    fn default() -> Self {
+        Self {
+            pending_events: GrowableAllocRingBuffer::default(),
+            timeouts: BTreeMap::default(),
+            epoll: Epoll::new(EpollCreateFlags::empty()).unwrap(),
+            epoll_event_buffer: EpollEventBuffer {
+                buffer: [EpollEvent::empty(); 32],
+                num_elements: 0,
+            },
+        }
+    }
+}
+
+impl Iterator for Reactor {
+    type Item = Event;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let next_timeout = if let Some((timeout, _)) = self.timeouts.first_key_value() {
+                if Instant::now() >= *timeout {
+                    break Some(self.timeouts.pop_first().unwrap().1);
+                } else {
+                    timeout
+                        .duration_since(Instant::now())
+                        .as_millis()
+                        .try_into()
+                        .unwrap()
                 }
-
-                timeouts.pop_first();
             } else {
-                break;
+                PollTimeout::NONE
+            };
+
+            for event in &self.epoll_event_buffer.buffer[..self.epoll_event_buffer.num_elements] {
+                let fd = event.data() as RawFd;
+                self.pending_events.push_back(Event::DataReceived(fd));
+            }
+            self.epoll_event_buffer.num_elements = 0;
+
+            if let Some(event) = self.pending_events.pop_front() {
+                break Some(event);
+            } else {
+                self.epoll_event_buffer.num_elements = self
+                    .epoll
+                    .wait(&mut self.epoll_event_buffer.buffer, next_timeout)
+                    .unwrap();
             }
         }
+    }
+}
 
-        let poll_timeout = if let Some((timeout, _)) = timeouts.first_key_value() {
-            timeout
-                .duration_since(Instant::now())
-                .as_millis()
-                .try_into()
-                .unwrap()
-        } else {
-            PollTimeout::NONE
-        };
+fn main() {
+    let mut db = Database::default();
+    let mut streams = HashMap::new();
+    let mut event_loop = Reactor::default();
 
-        let num_events = epoll.wait(&mut event_buffer, poll_timeout).unwrap();
+    let listener = TcpListener::bind("127.0.0.1:6379").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    event_loop.register_oneshot(listener.as_fd());
 
-        for event in &event_buffer[..num_events] {
-            let fd = event.data() as RawFd;
-            if fd == listener.as_raw_fd() {
+    while let Some(event) = event_loop.next() {
+        match event {
+            Event::DataReceived(fd) if fd == listener.as_raw_fd() => {
                 match listener.accept() {
                     Ok((stream, _)) => {
                         stream.set_nonblocking(true).unwrap();
-
-                        epoll
-                            .add(
-                                stream.as_fd(),
-                                EpollEvent::new(EpollFlags::EPOLLIN, stream.as_raw_fd() as u64),
-                            )
-                            .unwrap();
-
+                        event_loop.register_oneshot(stream.as_fd());
                         streams.insert(stream.as_raw_fd(), stream);
                     }
-                    Err(e) => println!("Failed to accept stream: {e}"),
+                    Err(e) => println!("Error accepting client: {e}"),
                 }
-            } else {
-                handle_stream(fd, &mut streams, &mut db, &mut timeouts).unwrap();
+                event_loop.reactivate_oneshot(listener.as_fd());
             }
+            Event::DataReceived(fd) => {
+                handle_stream(fd, &mut streams, &mut db, &mut event_loop).unwrap();
+                event_loop.reactivate_oneshot(streams.get(&fd).unwrap().as_fd());
+            }
+            Event::StopWaiting(fd, key) => {
+                let list = db.lists.get_mut(&key).unwrap();
+
+                if let Some(wait_idx) = list.waiting.iter().position(|val| *val == fd) {
+                    _ = list.waiting.remove(wait_idx);
+                    let stream = streams.get_mut(&fd).unwrap();
+                    send_null_bulk_string(stream);
+                }
+            }
+            Event::InvalidateEntry(key) => {
+                _ = db.values.remove(&key);
+            }
+            _ => println!("Unknown event received: {event:?}"),
         }
     }
 }
@@ -118,7 +184,7 @@ fn handle_stream(
     fd: RawFd,
     streams: &mut HashMap<RawFd, TcpStream>,
     db: &mut Database,
-    timeouts: &mut BTreeMap<Instant, TimeoutAction>,
+    event_loop: &mut Reactor,
 ) -> std::io::Result<()> {
     let mut buf = [0; 512];
 
@@ -196,13 +262,10 @@ fn handle_stream(
                     {
                         let timeout = Instant::now()
                             + Duration::from_millis(cmd_parts.next().unwrap().parse().unwrap());
-                        timeouts.insert(timeout, TimeoutAction::InvalidateEntry(key.into()));
+                        event_loop.register_timeout(timeout, Event::InvalidateEntry(key.into()));
                     }
 
-                    assert!(db
-                        .values
-                        .insert(key.to_string(), value.to_string())
-                        .is_none());
+                    _ = db.values.insert(key.to_string(), value.to_string());
 
                     send_simple_string(stream, "OK")
                 }
@@ -237,9 +300,9 @@ fn handle_stream(
                     let list = db.lists.entry(key.into()).or_default();
                     if list.content.is_empty() {
                         if timeout > 0.0 {
-                            timeouts.insert(
+                            event_loop.register_timeout(
                                 Instant::now() + Duration::from_secs_f32(timeout),
-                                TimeoutAction::StopWaiting(stream.as_raw_fd(), key.into()),
+                                Event::StopWaiting(stream.as_raw_fd(), key.into()),
                             );
                         }
                         list.waiting.push_back(fd);

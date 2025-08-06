@@ -82,6 +82,7 @@ dependencies = [
  "bytes",
  "nix",
  "nom",
+ "ringbuffer",
  "thiserror",
  "tokio",
 ]
@@ -235,6 +236,12 @@ checksum = "c82cf8cff14456045f55ec4241383baeff27af886adb72ffb2162f99911de0fd"
 dependencies = [
  "bitflags",
 ]
+
+[[package]]
+name = "ringbuffer"
+version = "0.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "57b0b88a509053cbfd535726dcaaceee631313cef981266119527a1d110f6d2b"
 
 [[package]]
 name = "rustc-demangle"
