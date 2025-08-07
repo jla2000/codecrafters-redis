@@ -227,9 +227,10 @@ async fn handle_request(request: &Vec<&str>, stream: &mut TcpStream, state: Rc<S
 
             match (id, db_stream.last()) {
                 _ if id < StreamKey(0, 1) => {
-                    send_error(stream, "The ID specified in XADD must be greater than 0-0").await
+                    send_simple_error(stream, "The ID specified in XADD must be greater than 0-0")
+                        .await
                 }
-                (_, Some((last_key, _))) if id <= *last_key => send_error(
+                (_, Some((last_key, _))) if id <= *last_key => send_simple_error(
                     stream,
                     "The ID specified in XADD is equal or smaller than the target stream top item",
                 )
@@ -296,9 +297,9 @@ async fn send_null_bulk_string(stream: &mut TcpStream) {
     stream.write_all(b"$-1\r\n").await.unwrap();
 }
 
-async fn send_error(stream: &mut TcpStream, data: &str) {
+async fn send_simple_error(stream: &mut TcpStream, data: &str) {
     stream
-        .write_all(format!("-{}\r\n", data).as_bytes())
+        .write_all(format!("-ERR {}\r\n", data).as_bytes())
         .await
         .unwrap();
 }
