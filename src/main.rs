@@ -198,7 +198,7 @@ async fn handle_request(request: &Vec<&str>, stream: &mut TcpStream, state: Rc<S
             let db_stream = db.streams.entry(key.to_string()).or_default();
             _ = db_stream.insert(key.to_string(), StreamEntry(Vec::new()));
 
-            send_bulk_string(stream, key).await;
+            send_bulk_string(stream, id).await;
         }
         _ => {}
     }
