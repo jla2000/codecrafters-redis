@@ -198,20 +198,19 @@ async fn wait_for_list(key: &str, state: Rc<State<'_>>, timeout: Duration) -> Wa
     if list.content.is_empty() {
         let (sender, receiver) = smol::channel::bounded(1);
 
+        list.waiting.push_back(sender.clone());
+        drop(db);
+
         if !timeout.is_zero() {
-            let cloned_sender = sender.clone();
             state
                 .executor
                 .spawn(async move {
                     _ = Timer::after(timeout).await;
-                    _ = cloned_sender.send(WaitSignal::Timeout).await;
+                    _ = sender.send(WaitSignal::Timeout).await;
                 })
                 .detach();
         }
 
-        list.waiting.push_back(sender);
-
-        drop(db);
         return receiver.recv().await.unwrap();
     }
 
