@@ -48,15 +48,15 @@ fn main() {
         executor: LocalExecutor::new(),
     });
 
-    let cloned_state = state.clone();
+    let state_for_executor = state.clone();
     smol::block_on(state.executor.run(async move {
         let acceptor = TcpListener::bind("127.0.0.1:6379").await.unwrap();
 
         while let Ok((stream, _)) = acceptor.accept().await {
-            let cloned_cloned_state = cloned_state.clone();
-            cloned_state
+            let state_for_client = state_for_executor.clone();
+            state_for_executor
                 .executor
-                .spawn(async move { create_client(stream, cloned_cloned_state).await })
+                .spawn(async move { create_client(stream, state_for_client).await })
                 .detach();
         }
     }));
