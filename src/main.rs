@@ -4,7 +4,6 @@ use std::{
     collections::{HashMap, VecDeque},
     fmt::Display,
     rc::Rc,
-    str::FromStr,
     time::Duration,
 };
 
@@ -12,7 +11,7 @@ use nom::{
     bytes::complete::{take, take_while},
     combinator::map_res,
     multi::many,
-    sequence::{self, terminated},
+    sequence::terminated,
     IResult, Parser,
 };
 use nom::{bytes::tag, character::complete::char, sequence::delimited};
@@ -34,9 +33,6 @@ struct List {
     content: Vec<String>,
     waiting: VecDeque<Sender<WaitSignal>>,
 }
-
-#[derive(PartialEq, Eq, PartialOrd, Ord, Copy, Clone)]
-struct StreamKey(usize, usize);
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone)]
 struct EntryId {
