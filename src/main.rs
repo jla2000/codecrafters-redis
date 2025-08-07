@@ -177,6 +177,16 @@ async fn handle_request(request: &Vec<&str>, stream: &mut TcpStream, state: Rc<S
                 }
             }
         }
+        ["TYPE", key] => {
+            let db = state.database.borrow();
+            if db.lists.contains_key(*key) {
+                send_simple_string(stream, "list").await;
+            } else if db.values.contains_key(*key) {
+                send_simple_string(stream, "string").await;
+            } else {
+                send_simple_string(stream, "none").await;
+            }
+        }
         _ => {}
     }
 }
