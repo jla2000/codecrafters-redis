@@ -1,5 +1,6 @@
 use std::{
     cell::RefCell,
+    cmp::Ordering,
     collections::{HashMap, VecDeque},
     fmt::Display,
     rc::Rc,
@@ -11,7 +12,7 @@ use nom::{
     bytes::complete::{take, take_while},
     combinator::map_res,
     multi::many,
-    sequence::terminated,
+    sequence::{self, terminated},
     IResult, Parser,
 };
 use nom::{bytes::tag, character::complete::char, sequence::delimited};
@@ -21,6 +22,7 @@ use smol::{
     net::{TcpListener, TcpStream},
     LocalExecutor, Timer,
 };
+use thiserror::Error;
 
 enum WaitSignal {
     Timeout,
@@ -36,24 +38,46 @@ struct List {
 #[derive(PartialEq, Eq, PartialOrd, Ord, Copy, Clone)]
 struct StreamKey(usize, usize);
 
-impl Display for StreamKey {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}-{}", self.0, self.1)
+#[derive(PartialEq, Eq, PartialOrd, Ord, Copy, Clone)]
+struct EntryId {
+    millis: usize,
+    sequence: usize,
+}
+
+#[derive(Error, Debug)]
+enum GenerateEntryIdError {
+    #[error("The ID specified in XADD is equal or smaller than the target stream top item")]
+    Invalid,
+    #[error("The ID specified in XADD must be greater than 0-0")]
+    Reserved,
+}
+
+fn generate_entry_id(
+    last_id: EntryId,
+    millis: usize,
+    sequence: Option<usize>,
+) -> Result<EntryId, GenerateEntryIdError> {
+    match millis.cmp(&last_id.millis) {
+        Ordering::Less => Err(GenerateEntryIdError::Invalid),
+        Ordering::Equal => match sequence {
+            None => Ok(EntryId {
+                millis,
+                sequence: last_id.sequence + 1,
+            }),
+            Some(sequence) if sequence > last_id.sequence => Ok(EntryId { millis, sequence }),
+            Some(sequence) if millis == 0 && sequence == 0 => Err(GenerateEntryIdError::Reserved),
+            _ => Err(GenerateEntryIdError::Invalid),
+        },
+        Ordering::Greater => Ok(EntryId {
+            millis,
+            sequence: sequence.unwrap_or(0),
+        }),
     }
 }
 
-impl FromStr for StreamKey {
-    type Err = ();
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if let [milliseconds, sequence] = s.split("-").collect::<Vec<_>>().as_slice() {
-            Ok(StreamKey(
-                milliseconds.parse().map_err(|_| ())?,
-                sequence.parse().map_err(|_| ())?,
-            ))
-        } else {
-            Err(())
-        }
+impl Display for EntryId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}-{}", self.millis, self.sequence)
     }
 }
 
@@ -62,7 +86,7 @@ struct StreamEntry(Vec<(String, String)>);
 
 #[derive(Default)]
 struct Database {
-    streams: HashMap<String, Vec<(StreamKey, StreamEntry)>>,
+    streams: HashMap<String, Vec<(EntryId, StreamEntry)>>,
     values: HashMap<String, String>,
     lists: HashMap<String, List>,
 }
@@ -223,21 +247,28 @@ async fn handle_request(request: &Vec<&str>, stream: &mut TcpStream, state: Rc<S
             let mut db = state.database.borrow_mut();
             let db_stream = db.streams.entry(key.to_string()).or_default();
 
-            let id: StreamKey = id.parse().unwrap();
+            let parts = id.split("-").collect::<Vec<_>>();
+            let [millis, sequence] = parts.as_slice() else {
+                unreachable!()
+            };
 
-            match (id, db_stream.last()) {
-                _ if id < StreamKey(0, 1) => {
-                    send_simple_error(stream, "The ID specified in XADD must be greater than 0-0")
-                        .await
-                }
-                (_, Some((last_key, _))) if id <= *last_key => send_simple_error(
-                    stream,
-                    "The ID specified in XADD is equal or smaller than the target stream top item",
-                )
-                .await,
-                _ => {
+            let millis: usize = millis.parse().unwrap_or(0);
+            let sequence: Option<usize> = sequence.parse().ok();
+
+            match generate_entry_id(
+                db_stream.last().map(|(id, values)| *id).unwrap_or(EntryId {
+                    millis: 0,
+                    sequence: 0,
+                }),
+                millis,
+                sequence,
+            ) {
+                Ok(id) => {
                     _ = db_stream.push((id, StreamEntry(Vec::new())));
                     send_bulk_string(stream, &id.to_string()).await;
+                }
+                Err(e) => {
+                    send_simple_error(stream, &e.to_string()).await;
                 }
             }
         }
