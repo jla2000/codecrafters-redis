@@ -32,7 +32,11 @@ struct List {
 }
 
 #[derive(Default)]
+struct StreamEntry(Vec<(String, String)>);
+
+#[derive(Default)]
 struct Database {
+    streams: HashMap<String, HashMap<String, StreamEntry>>,
     values: HashMap<String, String>,
     lists: HashMap<String, List>,
 }
@@ -183,9 +187,18 @@ async fn handle_request(request: &Vec<&str>, stream: &mut TcpStream, state: Rc<S
                 send_simple_string(stream, "list").await;
             } else if db.values.contains_key(*key) {
                 send_simple_string(stream, "string").await;
+            } else if db.streams.contains_key(*key) {
+                send_simple_string(stream, "stream").await;
             } else {
                 send_simple_string(stream, "none").await;
             }
+        }
+        ["XADD", key, id, values @ ..] => {
+            let mut db = state.database.borrow_mut();
+            let db_stream = db.streams.entry(key.to_string()).or_default();
+            _ = db_stream.insert(key.to_string(), StreamEntry(Vec::new()));
+
+            send_bulk_string(stream, key).await;
         }
         _ => {}
     }
