@@ -38,13 +38,13 @@ struct List {
 #[derive(PartialEq, Eq, PartialOrd, Ord, Copy, Clone)]
 struct StreamKey(usize, usize);
 
-#[derive(PartialEq, Eq, PartialOrd, Ord, Copy, Clone)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone)]
 struct EntryId {
     millis: usize,
     sequence: usize,
 }
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, PartialEq, Eq)]
 enum GenerateEntryIdError {
     #[error("The ID specified in XADD is equal or smaller than the target stream top item")]
     Invalid,
@@ -256,7 +256,7 @@ async fn handle_request(request: &Vec<&str>, stream: &mut TcpStream, state: Rc<S
             let sequence: Option<usize> = sequence.parse().ok();
 
             match generate_entry_id(
-                db_stream.last().map(|(id, values)| *id).unwrap_or(EntryId {
+                db_stream.last().map(|(id, _)| *id).unwrap_or(EntryId {
                     millis: 0,
                     sequence: 0,
                 }),
