@@ -82,7 +82,7 @@ async fn handle_request(request: &Vec<&str>, stream: &mut TcpStream, state: Rc<S
     println!("Received request: {request:?}");
 
     match request.as_slice() {
-        ["PING"] => send_bulk_string(stream, "PONG").await,
+        ["PING"] => send_simple_string(stream, "PONG").await,
         ["ECHO", message] => send_bulk_string(stream, *message).await,
         ["GET", key] => match state.database.borrow().values.get(*key) {
             Some(value) => send_bulk_string(stream, value).await,
