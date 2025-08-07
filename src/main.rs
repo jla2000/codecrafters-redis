@@ -58,7 +58,10 @@ fn generate_entry_id(
     sequence: Option<usize>,
 ) -> Result<EntryId, GenerateEntryIdError> {
     match millis.cmp(&last_id.millis) {
-        Ordering::Less => Err(GenerateEntryIdError::Invalid),
+        Ordering::Less => match sequence {
+            Some(0) if millis == 0 => Err(GenerateEntryIdError::Reserved),
+            _ => Err(GenerateEntryIdError::Invalid),
+        },
         Ordering::Equal => match sequence {
             None => Ok(EntryId {
                 millis,
