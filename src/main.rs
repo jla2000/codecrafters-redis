@@ -97,7 +97,7 @@ async fn handle_request(request: &Vec<&str>, stream: &mut TcpStream, state: Rc<S
 
             send_simple_string(stream, "OK").await
         }
-        ["SET", key, value, "PX", timeout_ms] => {
+        ["SET", key, value, "PX" | "px", timeout_ms] => {
             state
                 .database
                 .borrow_mut()
