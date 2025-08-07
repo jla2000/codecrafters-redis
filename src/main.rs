@@ -1,7 +1,9 @@
 use std::{
     cell::RefCell,
     collections::{HashMap, VecDeque},
+    fmt::Display,
     rc::Rc,
+    str::FromStr,
     time::Duration,
 };
 
@@ -31,12 +33,36 @@ struct List {
     waiting: VecDeque<Sender<WaitSignal>>,
 }
 
+#[derive(PartialEq, Eq, PartialOrd, Ord, Copy, Clone)]
+struct StreamKey(usize, usize);
+
+impl Display for StreamKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}-{}", self.0, self.1)
+    }
+}
+
+impl FromStr for StreamKey {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if let [milliseconds, sequence] = s.split("-").collect::<Vec<_>>().as_slice() {
+            Ok(StreamKey(
+                milliseconds.parse().map_err(|_| ())?,
+                sequence.parse().map_err(|_| ())?,
+            ))
+        } else {
+            Err(())
+        }
+    }
+}
+
 #[derive(Default)]
 struct StreamEntry(Vec<(String, String)>);
 
 #[derive(Default)]
 struct Database {
-    streams: HashMap<String, HashMap<String, StreamEntry>>,
+    streams: HashMap<String, Vec<(StreamKey, StreamEntry)>>,
     values: HashMap<String, String>,
     lists: HashMap<String, List>,
 }
@@ -196,9 +222,23 @@ async fn handle_request(request: &Vec<&str>, stream: &mut TcpStream, state: Rc<S
         ["XADD", key, id, values @ ..] => {
             let mut db = state.database.borrow_mut();
             let db_stream = db.streams.entry(key.to_string()).or_default();
-            _ = db_stream.insert(key.to_string(), StreamEntry(Vec::new()));
 
-            send_bulk_string(stream, id).await;
+            let id: StreamKey = id.parse().unwrap();
+
+            match (id, db_stream.last()) {
+                _ if id < StreamKey(0, 1) => {
+                    send_error(stream, "The ID specified in XADD must be greater than 0-0").await
+                }
+                (_, Some((last_key, _))) if id <= *last_key => send_error(
+                    stream,
+                    "The ID specified in XADD is equal or smaller than the target stream top item",
+                )
+                .await,
+                _ => {
+                    _ = db_stream.push((id, StreamEntry(Vec::new())));
+                    send_bulk_string(stream, &id.to_string()).await;
+                }
+            }
         }
         _ => {}
     }
@@ -254,6 +294,13 @@ async fn send_string_array(stream: &mut TcpStream, data: &[String]) {
 
 async fn send_null_bulk_string(stream: &mut TcpStream) {
     stream.write_all(b"$-1\r\n").await.unwrap();
+}
+
+async fn send_error(stream: &mut TcpStream, data: &str) {
+    stream
+        .write_all(format!("-{}\r\n", data).as_bytes())
+        .await
+        .unwrap();
 }
 
 async fn send_bulk_string(stream: &mut TcpStream, data: &str) {
