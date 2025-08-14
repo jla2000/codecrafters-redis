@@ -136,11 +136,18 @@ async fn handle_request(request: &Vec<&str>, stream: &mut TcpStream, state: Rc<S
 
     match request.as_slice() {
         ["PING"] => send_simple_string(stream, "PONG").await,
-        ["ECHO", message] => send_bulk_string(stream, *message).await,
-        ["GET", key] => match state.database.borrow().values.get(*key) {
-            Some(value) => send_bulk_string(stream, value).await,
-            _ => send_null_bulk_string(stream).await,
-        },
+        ["ECHO", message] => send_bulk_string(stream, message).await,
+        ["GET", key] => {
+            let result = {
+                let db = state.database.borrow();
+                db.values.get(*key).cloned()
+            };
+
+            match result {
+                Some(value) => send_bulk_string(stream, &value).await,
+                _ => send_null_bulk_string(stream).await,
+            }
+        }
         ["SET", key, value] => {
             state
                 .database
@@ -184,21 +191,27 @@ async fn handle_request(request: &Vec<&str>, stream: &mut TcpStream, state: Rc<S
             }
         }
         ["LPOP", key] => {
-            let mut db = state.database.borrow_mut();
-            let list = db.lists.entry(key.to_string()).or_default();
+            let result = {
+                let mut db = state.database.borrow_mut();
+                let list = db.lists.entry(key.to_string()).or_default();
+                list.content.pop()
+            };
 
-            if let Some(element) = list.content.pop() {
+            if let Some(element) = result {
                 send_string_array(stream, &[key.to_string(), element]).await
             } else {
                 send_null_bulk_string(stream).await
             }
         }
         ["LLEN", key] => {
-            let db = state.database.borrow();
-            match db.lists.get(*key) {
-                Some(list) => send_integer(stream, list.content.len()).await,
-                None => send_integer(stream, 0).await,
-            }
+            let len = {
+                let db = state.database.borrow();
+                db.lists
+                    .get(*key)
+                    .map(|list| list.content.len())
+                    .unwrap_or(0)
+            };
+            send_integer(stream, len).await;
         }
         ["LRANGE", key, start, end] => {
             let start_idx = start.parse().unwrap();
@@ -222,25 +235,26 @@ async fn handle_request(request: &Vec<&str>, stream: &mut TcpStream, state: Rc<S
             match wait_for_list(key, state.clone(), timeout).await {
                 WaitSignal::Timeout => send_null_bulk_string(stream).await,
                 WaitSignal::Completed => {
-                    let mut db = state.database.borrow_mut();
-                    let list = db.lists.entry(key.to_string()).or_default();
-
-                    let element = list.content.pop().unwrap();
+                    let element = {
+                        let mut db = state.database.borrow_mut();
+                        let list = db.lists.entry(key.to_string()).or_default();
+                        list.content.pop().unwrap()
+                    };
                     send_string_array(stream, &[key.to_string(), element]).await
                 }
             }
         }
         ["TYPE", key] => {
-            let db = state.database.borrow();
-            if db.lists.contains_key(*key) {
-                send_simple_string(stream, "list").await;
-            } else if db.values.contains_key(*key) {
-                send_simple_string(stream, "string").await;
-            } else if db.streams.contains_key(*key) {
-                send_simple_string(stream, "stream").await;
-            } else {
-                send_simple_string(stream, "none").await;
-            }
+            let value_type = {
+                let db = state.database.borrow();
+                match () {
+                    _ if db.lists.contains_key(*key) => "list",
+                    _ if db.values.contains_key(*key) => "string",
+                    _ if db.streams.contains_key(*key) => "stream",
+                    _ => "none",
+                }
+            };
+            send_simple_string(stream, value_type).await;
         }
         ["XADD", key, id, values @ ..] => {
             let mut db = state.database.borrow_mut();
@@ -329,7 +343,7 @@ async fn send_null_bulk_string(stream: &mut TcpStream) {
 
 async fn send_simple_error(stream: &mut TcpStream, data: &str) {
     stream
-        .write_all(format!("-ERR {}\r\n", data).as_bytes())
+        .write_all(format!("-ERR {data}\r\n").as_bytes())
         .await
         .unwrap();
 }
